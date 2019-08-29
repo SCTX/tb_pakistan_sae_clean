@@ -98,36 +98,38 @@ cell_pred <- plogis(cell_l)
 ## Rescale prevalence rate into absolute values
 cell_pred <- cell_pred * pred.frame$pop_tot_2018
 
-# Extract statistics of interest from the samples (i.e., mean and sd)
-pred.frame$pred.mean <- rowMeans(cell_pred)
-pred.frame$pred.sd <- rowSds(cell_pred)
-pred.frame$pred.quantile.025 <- apply(cell_pred, 1, function(x){ quantile(x, 0.025) })
-pred.frame$pred.quantile.975 <- apply(cell_pred, 1, function(x){ quantile(x, 0.975) })
-
-# Plot prediction
-pred.spdf.mean <- SpatialPixelsDataFrame(points = as.matrix(pred.frame[,c("LONGITUDE", "LATITUDE")]), 
-                                      data = data.frame(pred.frame[,"pred.mean"]))
-pred.spdf.sd <- SpatialPixelsDataFrame(points = as.matrix(pred.frame[,c("LONGITUDE", "LATITUDE")]), 
-                                         data = data.frame(pred.frame[,"pred.sd"]))
-
-my.palette <- rev(brewer.pal(n = 10, name = "RdYlGn"))
-plot(raster(pred.spdf.mean), main="Mean prediction", col = my.palette)
-plot(raster(pred.spdf.sd), main="Standard deviation", col = my.palette)
-
+## Format the predictions as a stack of raster (each layer is one posterior draw)
+pred.raster <- raster::stack(SpatialPixelsDataFrame(
+  points = as.matrix(pred.frame[,c("LONGITUDE", "LATITUDE")]), 
+  data = as.data.frame(cell_pred)))
 
 ###############################################################################
 ## Clip predictions onto the official district shapes
 
 OFFICIAL.SHAPE.FILE.NAME <- file.path("data", "shapefiles", "pak_adm2.shp")
 
+# Load the official disctrict shapes
 shape.adm2 <- shapefile(OFFICIAL.SHAPE.FILE.NAME)
 
-pop.tot.raster <- raster(SpatialPixelsDataFrame(points = as.matrix(pred.frame[,c("LONGITUDE", "LATITUDE")]), 
-                                                data = data.frame(pred.frame[,"pop_tot_2018"])))
+# Format the total population per pixel as a raster (i.e., `pop_tot_2018` column in pred.frame)
+pop.tot.raster <- raster(SpatialPixelsDataFrame(
+  points = as.matrix(pred.frame[,c("LONGITUDE", "LATITUDE")]), 
+  data = data.frame(pred.frame[,"pop_tot_2018"])))
 
-pred.clipped.numer <- extract(raster(pred.spdf.mean), shape.adm2, fun = sum, na.rm = T)
+# Clip each prediction (for each posterior draw) onto the districts
+pred.clipped.numer <- extract(pred.raster, shape.adm2, fun = sum, na.rm = T)
+# Clip the total populations onto the districts
 pred.clipped.denom <- extract(pop.tot.raster, shape.adm2, fun = sum, na.rm = T)
 
-shape.adm2$pred.prev.mean <- pred.clipped.numer / pred.clipped.denom * 1e5
+# Normalize the predictions into prevalence per 100'000
+pred.prev.per.district <- pred.clipped.numer / pred.clipped.denom[,1] * 1e5
 
-spplot(shape.adm2, zcol = "pred.prev.mean")
+# Compute statistics from the prediction draws
+shape.adm2$pred.prev.mean <- rowMeans(pred.prev.per.district)
+shape.adm2$pred.prev.std <- rowSds(pred.prev.per.district)
+shape.adm2$pred.quantile.025 <- apply(pred.prev.per.district, 1, function(x){ quantile(x, 0.025) })
+shape.adm2$pred.quantile.975 <- apply(pred.prev.per.district, 1, function(x){ quantile(x, 0.975) })
+
+# Plot the results
+spplot(shape.adm2, zcol = "pred.prev.mean", main="Average Predicted Prevalence per District")
+spplot(shape.adm2, zcol = "pred.prev.std", main="Standard Deviation of Prevalence per District")
